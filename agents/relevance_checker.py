@@ -71,23 +71,19 @@ class RelevanceChecker:
         #call the llm
 
         try:
-            response = self.model.chat(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt  # Changed from list to string
-                    }
-                ]
-            )
+            response = self.model.generate_content(prompt)
+            
+            # The actual text is in the .text attribute
+            generated_text = response.text 
+            print("LLM response received.")
+            # Now you can use 'generated_text'
+
         except Exception as e:
             print(f"Error during model inference: {e}")
-            return "NO_MATCH"
-    
-        print(f"Checker response: {llm_response}")
-
+            raise RuntimeError("Failed to generate answer due to a model error.") from e
 
         try:
-            llm_response = response['choices'][0]['message']['content'].strip().upper()
+            llm_response = generated_text.strip().upper()
             print(f"LLM response: {llm_response}")
 
         except (IndexError, KeyError) as e:
