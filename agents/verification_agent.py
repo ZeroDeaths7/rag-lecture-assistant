@@ -1,39 +1,46 @@
-import json
-import google.generativeai as genai
-from langchain.schema import Document
-from typing import List, Dict
 import os
+from typing import List, Dict
+from langchain.schema import Document
+from google import genai
+from google.genai import types
 
 class VerificationAgent:
     def __init__(self):
-        
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set")
         
-        genai.configure(api_key=api_key)
+        self.client = genai.Client(api_key=api_key)
 
-        self.model = genai.GenerativeModel(
-            model_name="gemini-1.5-pro-latest",
-            generation_config={
-                "max_output_tokens": 512,
-                "temperature": 0.4,
-            }
+        self.config = types.GenerateContentConfig(
+            max_output_tokens=512,
+            temperature=0.4,
+            safety_settings=[
+                types.SafetySetting(
+                    category="HARM_CATEGORY_HARASSMENT",
+                    threshold="BLOCK_NONE"
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_HATE_SPEECH",
+                    threshold="BLOCK_NONE"
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    threshold="BLOCK_NONE"
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                    threshold="BLOCK_NONE"
+                )
+            ]
         )
-        print("Gemini model for VerificationAgent initialized successfully.")
+        print("Gemini Client for VerificationAgent initialized successfully.")
 
     def sanitize_response(self, response_text: str) -> str:
-        """
-        Sanitize the LLM's response by stripping excess whitespace.
-        """
         return response_text.strip()
     
     def generate_prompt(self, answer: str, context: str) -> str:
-
-        """
-        Generate a structured prompt for the LLM to verify the answer against the context.
-        """
-        prompt = f"""
+        return f"""
         You are an AI assistant designed to verify the accuracy and relevance of answers based on provided context.
 
         **Instructions:**
@@ -59,13 +66,8 @@ class VerificationAgent:
 
         **Respond ONLY with the above format.**
         """
-        return prompt
-    
 
     def parse_verification_response(self, response_text: str) -> Dict:
-        """
-        Parse the LLM's verification response into a structured dictionary.
-        """
         try:
             lines = response_text.strip().split("\n")
             result = {
@@ -96,12 +98,7 @@ class VerificationAgent:
             print(f"Error parsing verification response: {e}")
             return None
         
-    
     def format_verification_report(self, verification: Dict) -> str:
-        """
-        format dict into a paragraph
-        """
-
         if not verification:
             return "Error: Unable to generate verification report."
 
@@ -114,28 +111,20 @@ class VerificationAgent:
             unsupported = ', '.join(verification['Unsupported Claims'])
             report += f"Unsupported claims include: {unsupported}. "
 
-        if verification['Contradictions']:
-            contradictions = ', '.join(verification['Contradictions'])
-            report += f"Contradictions found: {contradictions}. "
-
-        if verification['Additional Details']:
-            additional = ' '.join(verification['Additional Details'])
-            report += f"Additional details: {additional}"
-
         return report.strip()
-    
-
 
     def check(self, answer: str, context_docs: List[Document]) -> str:
-        """
-        Verify the provided answer against the context documents.
-        """
         context = "\n\n".join([doc.page_content for doc in context_docs])
         prompt = self.generate_prompt(answer, context)
 
-        response = self.model.generate_text(prompt) #calling model to generate response
-        sanitized_response = self.sanitize_response(response.text)
+        # NEW CALL SYNTAX
+        response = self.client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=self.config
+        )
         
+        sanitized_response = self.sanitize_response(response.text)
         verification = self.parse_verification_response(sanitized_response)
         report = self.format_verification_report(verification)
         
