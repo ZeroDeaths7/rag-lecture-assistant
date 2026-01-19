@@ -9,10 +9,8 @@ class RelevanceChecker:
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
-        # NEW SDK INITIALIZATION
         self.client = genai.Client(api_key=api_key)
         
-        # New Config Style
         self.config = types.GenerateContentConfig(
             max_output_tokens=200,
             temperature=0.1,
@@ -63,7 +61,6 @@ class RelevanceChecker:
         """
 
         try:
-            # NEW CALL SYNTAX
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt,

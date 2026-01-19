@@ -21,11 +21,11 @@ class AgentWorkflow:
     def __init__(self):
         self.researcher = ResearchAgent()
         self.verifier = VerificationAgent()
-        self.relevance_checker = RelevanceChecker() # Now works because we removed 'docs' arg
+        self.relevance_checker = RelevanceChecker() 
         
     
     def create_workflow(self):
-        workflow = StateGraph(AgentState) # Fixed syntax: StateGraph(AgentState)
+        workflow = StateGraph(AgentState) 
 
         workflow.add_node("research", self.research_step)
         workflow.add_node("verify", self.verifier_step)
@@ -49,7 +49,6 @@ class AgentWorkflow:
 
     def verifier_step(self, state: AgentState) -> AgentState:
         print(f"Verification step initiated with draft answer: {state['draft_answer']}")
-        # FIXED: Changed .verify() to .check() to match your agent definition
         result = self.verifier.check(state['draft_answer'], state['documents'])
         return {"verification_report": result}
 
@@ -86,8 +85,7 @@ class AgentWorkflow:
         else:
             return "end"
 
-    # Note: full_pipeline is likely not used if you are using invoke() in app.py, 
-    # but kept for reference
+    #wont be needed most of the time imo
     def full_pipeline(self, question: str, retriever: EnsembleRetriever) -> str:
         documents = retriever.invoke(question)
         initial_state = {
