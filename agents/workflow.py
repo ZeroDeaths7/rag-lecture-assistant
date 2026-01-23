@@ -1,19 +1,20 @@
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, List, Dict
+from typing import TypedDict, List, Dict, Any
 from .research_agent import ResearchAgent
 from .verification_agent import VerificationAgent
 from .relevance_checker import RelevanceChecker
-from langchain.schema import Document
-from langchain.retrievers import EnsembleRetriever
+from langchain_core.documents import Document
 
+# NOTE: The 'EnsembleRetriever' import has been removed to fix your error.
+# We now use 'Any' for the retriever type hint.
 
 class AgentState(TypedDict):
     question: str
     documents: List[Document]
     draft_answer: str
-    verification_report: str # Fixed key name to match usage
+    verification_report: str
     is_relevant: bool
-    retriever: EnsembleRetriever
+    retriever: Any # Using Any avoids the import error
 
 
 class AgentWorkflow: 
@@ -21,11 +22,11 @@ class AgentWorkflow:
     def __init__(self):
         self.researcher = ResearchAgent()
         self.verifier = VerificationAgent()
-        self.relevance_checker = RelevanceChecker() 
+        self.relevance_checker = RelevanceChecker()
         
     
     def create_workflow(self):
-        workflow = StateGraph(AgentState) 
+        workflow = StateGraph(AgentState)
 
         workflow.add_node("research", self.research_step)
         workflow.add_node("verify", self.verifier_step)
@@ -37,13 +38,12 @@ class AgentWorkflow:
         workflow.add_conditional_edges("verify", self.after_verification, {"re_research": "research", "end": END})
         workflow.add_conditional_edges("check_relevance", self.after_relevance, {"re_research": "research", "irrelevant": END}) 
 
-        return workflow.compile() # Fixed: Must call .compile()
+        return workflow.compile()
     
 
     def research_step(self, state: AgentState) -> AgentState:
         print(f"Research step initiated with question: {state['question']}")
         result = self.researcher.generate(state['question'], state['documents'])
-        # FIXED: Update state with the answer
         return {"draft_answer": result['answer']}
 
 
@@ -80,22 +80,6 @@ class AgentWorkflow:
         print(f"After verification: {report}")
         
         if "Supported: NO" in report or "Relevant: NO" in report:
-            # Simple loop prevention could be added here, but for now allow re-research
             return "re_research"
         else:
             return "end"
-
-    #wont be needed most of the time imo
-    def full_pipeline(self, question: str, retriever: EnsembleRetriever) -> str:
-        documents = retriever.invoke(question)
-        initial_state = {
-            "question": question,
-            "documents": documents,
-            "draft_answer": "",
-            "verification_report": "",
-            "is_relevant": False,
-            "retriever": retriever
-        }
-        app = self.create_workflow()
-        final_state = app.invoke(initial_state)
-        return final_state['draft_answer']

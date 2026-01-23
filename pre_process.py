@@ -1,117 +1,189 @@
-import os
+import streamlit as st
 import json
-import subprocess
-import whisper
-from PIL import Image
-import pytesseract
+import os
+from dotenv import load_dotenv
+from typing import List
+from langchain_core.documents import Document
 
+# Internal Modules
+from agents.workflow import AgentWorkflow
+from retriever.retrieval import RetrieverBuilder
+from config.settings import settings
 
-def convert_to_audio(video_path: str, output_audio: str = "lecture_audio.mp3") -> str:
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-q:a", "0", "-map", "a", output_audio],
-        check=True
-    )
-    return output_audio
+# Load environment variables
+load_dotenv()
 
+# --- Page Configuration ---
+st.set_page_config(page_title="Lecture RAG Assistant", layout="wide")
 
-def create_transcript(audio_path: str, model_size: str = "tiny") -> list:
+# --- Helper Functions ---
+
+@st.cache_resource
+def load_and_process_data(json_path: str) -> List[Document]:
     """
-    Generate transcript with timestamps using Whisper.
-    Returns list of dicts: [{"start": float, "end": float, "text": str}, ...]
+    Loads lecture.json and converts it into LangChain Documents.
+    Combines transcript and slide text for better retrieval context.
     """
-    model = whisper.load_model(model_size)
-    result = model.transcribe(audio_path)
+    if not os.path.exists(json_path):
+        return []
 
-    transcript = []
-    for seg in result["segments"]:
-        transcript.append({
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"].strip()
-        })
-    return transcript
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
 
+    documents = []
+    for chunk in data:
+        # Combine transcript and slide text for rich context
+        content = f"Transcript: {chunk['transcript']}\nSlide Content: {chunk['slide_text']}"
+        
+        # Metadata is crucial for the UI to show the image later
+        metadata = {
+            "start": chunk['start'],
+            "end": chunk['end'],
+            "slide_image": chunk['slide_image']
+        }
+        
+        doc = Document(page_content=content, metadata=metadata)
+        documents.append(doc)
+    
+    return documents
 
-def extract_slide_at(video_path: str, timestamp: int, slide_path: str):
+@st.cache_resource
+def initialize_system(json_path: str):
     """
-    Extract a single slide image from video at given timestamp.
+    Initializes the Vector DB (Chroma) and the Agent Workflow.
+    Cached to prevent reloading on every interaction.
     """
-    subprocess.run(
-        ["ffmpeg", "-y", "-ss", str(timestamp), "-i", video_path, "-frames:v", "1", slide_path],
-        check=True
-    )
+    # 1. Load Documents
+    docs = load_and_process_data(json_path)
+    if not docs:
+        return None, None
 
+    # 2. Build Retriever
+    # Pass docs to build_hybrid_retriever so it can initialize the DB if needed
+    retriever_builder = RetrieverBuilder()
+    retriever = retriever_builder.build_hybrid_retriever(docs)
 
-def ocr_slide(slide_path: str) -> str:
-    """
-    Extract text from a slide image using Tesseract OCR.
-    """
-    try:
-        return pytesseract.image_to_string(Image.open(slide_path))
-    except Exception:
-        return ""
+    # 3. Initialize Workflow
+    workflow_agent = AgentWorkflow()
+    
+    return retriever, workflow_agent
 
+# --- Main App Interface ---
 
-def create_lecture_json(video_path: str, interval: int = 20,
-                        model_size: str = "tiny",
-                        output_json: str = "lecture.json") -> str:
-    """
-    Create a chunk-level JSON mapping:
-    [
-      { "start": ..., "end": ..., "transcript": "...", "slide_image": "...", "slide_text": "..." },
-      ...
-    ]
-    """
+st.title("🎓 Lecture Assistant RAG")
+st.markdown("Ask questions about the lecture. I will verify answers and show you the relevant slide.")
 
-    # --- Audio + Transcript ---
-    audio_path = convert_to_audio(video_path)
-    transcript_segments = create_transcript(audio_path, model_size)
+# Check for API Key
+if not os.getenv("GEMINI_API_KEY"):
+    st.error("⚠️ GEMINI_API_KEY not found. Please set it in your .env file.")
+    st.stop()
 
-    # --- Get video duration ---
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", video_path],
-        capture_output=True,
-        text=True
-    )
-    duration = float(result.stdout.strip())
+# Sidebar: File Status
+with st.sidebar:
+    st.header("System Status")
+    json_file = "lecture.json"
+    
+    if os.path.exists(json_file):
+        st.success(f"✅ Data found: {json_file}")
+    else:
+        st.error(f"❌ {json_file} not found. Please run pre_process.py first.")
+        st.stop()
+        
+    st.info("Loading system... (this may take a moment)")
+    retriever, workflow_agent = initialize_system(json_file)
+    if retriever:
+        st.success("System Ready!")
+    else:
+        st.error("Failed to initialize system.")
+        st.stop()
 
-    os.makedirs("slides", exist_ok=True)
+# Initialize Chat History
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    chunks = []
-    t = 0
-    slide_id = 1
-    while t < duration:
-        # --- Slide ---
-        slide_path = os.path.join("slides", f"slide_{slide_id:03d}.jpg")
-        extract_slide_at(video_path, t, slide_path)
-        slide_text = ocr_slide(slide_path)
+# Display Chat History
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if "image" in message:
+            st.image(message["image"], caption=f"Slide at {message['timestamp']}s", width=400)
+        # Show debug info if available in history
+        if "debug_docs" in message:
+            with st.expander("🧐 Retrieved Context (Debug)"):
+                for i, doc in enumerate(message["debug_docs"]):
+                    st.markdown(f"**Chunk {i+1} (Time: {doc.metadata.get('start')}s):**")
+                    st.text(doc.page_content)
 
-        # --- Transcript portion in this interval ---
-        transcript_chunk = [
-            seg["text"] for seg in transcript_segments
-            if seg["start"] >= t and seg["end"] < t + interval
-        ]
-        chunk_text = " ".join(transcript_chunk).strip()
+# Input Handler
+if prompt := st.chat_input("What did the lecturer say about...?"):
+    
+    # 1. User Message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-        chunks.append({
-            "start": t,
-            "end": min(t + interval, duration),
-            "transcript": chunk_text,
-            "slide_image": slide_path,
-            "slide_text": slide_text
-        })
+    # 2. Assistant Response
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        message_placeholder.markdown("🤔 *Thinking... (Researching & Verifying)*")
+        
+        try:
+            # Create workflow graph
+            workflow_graph = workflow_agent.create_workflow()
+            
+            # --- DEBUG STEP: Explicitly Retrieve Docs First ---
+            # We do this just to show them in the UI; the workflow will do it again internally,
+            # which is fine (cache handles it).
+            debug_docs = retriever.invoke(prompt)
+            
+            initial_state = {
+                "question": prompt,
+                "documents": debug_docs, # Pass retrieved docs directly to state
+                "draft_answer": "",
+                "verification_report": "",
+                "is_relevant": False,
+                "retriever": retriever
+            }
+            
+            # Run the graph
+            final_state = workflow_graph.invoke(initial_state)
+            answer = final_state.get("draft_answer", "Sorry, I couldn't generate an answer.")
+            
+            # Extract Metadata
+            relevant_docs = final_state.get("documents", [])
+            top_image = None
+            timestamp = None
+            
+            if relevant_docs:
+                top_doc = relevant_docs[0]
+                top_image = top_doc.metadata.get("slide_image")
+                timestamp = top_doc.metadata.get("start")
 
-        t += interval
-        slide_id += 1
+            # Update UI
+            message_placeholder.markdown(answer)
+            
+            if top_image and os.path.exists(top_image):
+                st.image(top_image, caption=f"Reference Slide (Time: {timestamp}s)", width=500)
+            
+            # Show Debug Expander
+            with st.expander("🧐 Retrieved Context (Debug)"):
+                if not debug_docs:
+                    st.warning("⚠️ No relevant documents were retrieved! The database might be empty or the query is too distinct.")
+                for i, doc in enumerate(debug_docs):
+                    st.markdown(f"**Chunk {i+1} (Time: {doc.metadata.get('start')}s):**")
+                    st.caption(doc.page_content[:300] + "...") # Show preview
+            
+            # Save to history
+            history_entry = {
+                "role": "assistant", 
+                "content": answer,
+                "debug_docs": debug_docs # Save for history view
+            }
+            if top_image:
+                history_entry["image"] = top_image
+                history_entry["timestamp"] = timestamp
+            
+            st.session_state.messages.append(history_entry)
 
-    with open(output_json, "w", encoding="utf-8") as f:
-        json.dump(chunks, f, indent=4, ensure_ascii=False)
-
-    return output_json
-
-
-if __name__ == "__main__":
-    video_file = "lecture.mp4"
-    json_file = create_lecture_json(video_file, interval=20, model_size="base")
-    print(f"Lecture data saved in {json_file}")
+        except Exception as e:
+            message_placeholder.error(f"An error occurred: {str(e)}")
